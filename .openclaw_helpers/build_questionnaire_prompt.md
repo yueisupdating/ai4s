@@ -5,9 +5,15 @@
 - Final DOCX must retain the original source questionnaire text for every question: include the original question stem and the original option text before the answer/evidence. Do not output only "Q1/Q2" plus answers.
 - Use this per-question structure in the DOCX/Markdown draft whenever possible: `Q<number>` -> `【原题】<original question text>` -> `【原选项】<all original option text, if any>` -> `【答案】...` -> `【证据】...` -> `【置信度】...`.
 - The JSON must be a flat object with exactly these string keys: 2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46.
-- Single-choice values must be JSON numbers only: A=1, B=2, C=3, D=4. Do not use letters and do not quote numeric values.
-- Multi-choice values must be JSON score numbers only: if the first option is selected, score 1; if the first option is not selected and exactly 1 other option is selected, score 2; if 2 to 4 non-first options are selected, score 3; if more than 4 non-first options are selected, score 4.
-- For question 47, rank 2 to 4 demands using exactly this format: 第一：<dimension> - <specific demand>. Each <dimension> must be one of: 建立扁平化组织架构；建立跨学科分布式团队；改革考核评价机制；明确知识产权归属；优化资源配置；引进与培养复合型人才；培育开放合作与协同文化.
+- For numeric score questions, values must be JSON numbers only: A=1, B=2, C=3, D=4. Do not use letters and do not quote numeric values. Numeric-score-only keys are: 3,4,5,6,7,8,9,10,11,12,13,14,16,18,19,20,21,22,23,24,26,28,29,30,31,32,33,34,37.
+- For Q2（主要研究领域）, do not calculate or save a score. Save selected research-field names exactly as text, for example `{"selected":["生命科学","信息科技"]}`.
+- For selected-option-only questions other than Q2, do not calculate or save a score. Save only selected option letters as an object like `{"selected":["D","E","F"]}`. Selected-option-only keys are: 17,25,35,36,39,40,41,42,43,44,45,46. In particular, Q17（AI主要应用环节）and Q25（科研组织机制调整内容）are not scored; they only record selected options.
+- For Q15（AI支撑平台使用情况）, save both selected options and score as `{"selected":["B","G"],"score":3}`. Scoring rule: if A is selected, score 1; if A is not selected and exactly 1 other option is selected, score 2; if 2 to 4 non-A options are selected, score 3; if more than 4 non-A options are selected, score 4.
+- For Q27（分布式科研团队组建情况）, save both selected options and score as `{"selected":["B","C"],"score":3}`. Scoring rule: selected A means 1; if selected options include B, score at least 2; if they include C, score at least 3; if they include D, score 4. Use the highest matching score among A/B/C/D; do not use the generic multi-choice count rule for Q27.
+- For Q38（改革紧迫性）, save the selected option and score as `{"selected":["C"],"score":3}`. Q38 is the only demand-section question with a score.
+- For Q39-Q46, do not calculate or save scores. Save only selected option letters as `{"selected":[...]}`.
+- Do not save option text, evidence, confidence, or explanations in JSON.
+- For question 47, rank 2 to 4 demands using exactly this format: 第一：<dimension> - <specific demand>. Each <dimension> must be one of: 建立扁平化组织架构；建立跨学科分布式团队；改革考核评价机制；明确知识产权归属；优化资源配置；引进与培养复合型人才；培育开放合作与协同文化. Do not add a summary line such as `【答案】第一：...` before the ranked list. Each rank label（第一/第二/第三/第四）may appear at most once in Q47, and ranked dimensions must not repeat.
 
 【输出目录硬性要求】
 - 不要新建机构缩写目录或任何子目录保存结果。
@@ -24,4 +30,4 @@
 
 请先在当前目录下生成规划文件，文件名必须严格命名为 plan.md。第二步：读取 plan.md 的内容再执行后续步骤。在进行任何文件读取或编辑之前，你必须先使用工具查看当前目录下的文件列表（如执行 ls 或类似技能），确认文件存在且名称无误后，再进行操作。
 
-多选问题每个选项都要给出确切的证据，不得所有选项都选择并且泛泛给出依据。单选题按选项顺序映射为数字：A=1、B=2、C=3、D=4，回答时只给出数字 1、2、3、4 中的一项而不用复述选项文字。多选题用于 JSON 时只保存得分：选第一个选项记 1 分；未选第一个且只选其他 1 项记 2 分；未选第一个且选其他 2-4 项记 3 分；未选第一个且选其他 4 项以上记 4 分。
+多选问题每个选项都要给出确切的证据，不得所有选项都选择并且泛泛给出依据。单选计分题按选项顺序映射为数字：A=1、B=2、C=3、D=4，回答时只给出数字 1、2、3、4 中的一项而不用复述选项文字。JSON 必须按本提示开头的字段规则输出：只统计选项的题仅保存 selected；Q15、Q27、Q38 保存 selected 和 score；其他计分题保存数字。

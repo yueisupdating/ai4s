@@ -1,1 +1,4 @@
 /result/
+/logs/
+/score_tables/
+*/__pycache__

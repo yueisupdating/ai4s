@@ -9,15 +9,17 @@ from xml.etree import ElementTree as ET
 from zipfile import ZipFile
 
 
-EXPECTED_SINGLE_CHOICE_KEYS = {
+EXPECTED_SCORE_ONLY_KEYS = {
     "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14",
     "16", "18", "19", "20", "21", "22", "23", "24", "26", "28", "29",
-    "30", "31", "32", "33", "34", "37", "38",
+    "30", "31", "32", "33", "34", "37",
 }
-EXPECTED_MULTI_CHOICE_SCORE_KEYS = {
-    "2", "15", "17", "25", "27", "35", "36", "39", "40", "41", "42",
+EXPECTED_SELECTED_ONLY_KEYS = {
+    "17", "25", "35", "36", "39", "40", "41", "42",
     "43", "44", "45", "46",
 }
+EXPECTED_TEXT_SELECTION_KEYS = {"2"}
+EXPECTED_SCORED_SELECTION_KEYS = {"15", "27", "38"}
 EXPECTED_SCORE_KEYS = {str(number) for number in range(2, 47)}
 
 WORD_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
@@ -154,20 +156,75 @@ def validate_docx_source_form_text(path: Path, source_path: Path | None = None) 
         )
 
 
+def require_score_number(path: Path, key: str, value: object) -> None:
+    if type(value) is not int or value not in {1, 2, 3, 4}:
+        raise SystemExit(f"{path}: key {key} must be JSON number 1/2/3/4, got {value!r}")
+
+
+def selected_letters(path: Path, key: str, value: object) -> list[str]:
+    if not isinstance(value, dict):
+        raise SystemExit(f'{path}: key {key} must be an object like {{"selected": ["B", "C"]}}')
+    selected = value.get("selected")
+    if not isinstance(selected, list) or not selected:
+        raise SystemExit(f'{path}: key {key}.selected must be a non-empty list of option letters')
+    letters: list[str] = []
+    for item in selected:
+        if not isinstance(item, str) or not re.fullmatch(r"[A-Z]", item.strip().upper()):
+            raise SystemExit(f"{path}: key {key}.selected contains invalid option letter: {item!r}")
+        letters.append(item.strip().upper())
+    if len(set(letters)) != len(letters):
+        raise SystemExit(f"{path}: key {key}.selected must not contain duplicate letters: {letters}")
+    return letters
+
+
+def selected_texts(path: Path, key: str, value: object) -> list[str]:
+    if not isinstance(value, dict):
+        raise SystemExit(f'{path}: key {key} must be an object like {{"selected": ["生命科学"]}}')
+    selected = value.get("selected")
+    if not isinstance(selected, list) or not selected:
+        raise SystemExit(f"{path}: key {key}.selected must be a non-empty list")
+    texts: list[str] = []
+    for item in selected:
+        if not isinstance(item, str) or not item.strip():
+            raise SystemExit(f"{path}: key {key}.selected contains invalid selection: {item!r}")
+        texts.append(item.strip())
+    if len(set(texts)) != len(texts):
+        raise SystemExit(f"{path}: key {key}.selected must not contain duplicate values: {texts}")
+    return texts
+
+
+def general_multi_choice_score(letters: list[str]) -> int:
+    if "A" in letters:
+        return 1
+    count = len(letters)
+    if count == 1:
+        return 2
+    if 2 <= count <= 4:
+        return 3
+    return 4
+
+
+def distributed_team_score(letters: list[str]) -> int:
+    ordered_scores = {"A": 1, "B": 2, "C": 3, "D": 4}
+    scores = [ordered_scores[letter] for letter in letters if letter in ordered_scores]
+    if not scores:
+        raise SystemExit("key 27.selected must include at least one of A/B/C/D for scoring")
+    return max(scores)
+
+
+def selected_score_object(path: Path, key: str, value: object) -> tuple[list[str], int]:
+    letters = selected_letters(path, key, value)
+    if not isinstance(value, dict) or type(value.get("score")) is not int or value["score"] not in {1, 2, 3, 4}:
+        raise SystemExit(f'{path}: key {key} must include integer score 1/2/3/4')
+    return letters, int(value["score"])
+
+
 def validate_score_json(path: Path) -> None:
     with path.open("r", encoding="utf-8") as handle:
         data = json.load(handle)
 
     if not isinstance(data, dict):
-        raise SystemExit('score JSON must be an object like {"2": 3, "3": 1}')
-
-    bad = {
-        key: value
-        for key, value in data.items()
-        if type(value) is not int or value not in {1, 2, 3, 4}
-    }
-    if bad:
-        raise SystemExit(f"score JSON values must be JSON numbers 1/2/3/4 only: {bad}")
+        raise SystemExit('score JSON must be an object with keys "2" through "46"')
 
     actual_keys = set(data)
     missing = sorted(EXPECTED_SCORE_KEYS - actual_keys, key=int)
@@ -177,6 +234,34 @@ def validate_score_json(path: Path) -> None:
             "score JSON keys must exactly match expected 47-question form keys 2 through 46; "
             f"missing={missing}, extra={extra}"
         )
+
+    for key in EXPECTED_SCORE_ONLY_KEYS:
+        require_score_number(path, key, data[key])
+
+    for key in EXPECTED_TEXT_SELECTION_KEYS:
+        selected_texts(path, key, data[key])
+
+    for key in EXPECTED_SELECTED_ONLY_KEYS:
+        selected_letters(path, key, data[key])
+        if isinstance(data[key], dict) and "score" in data[key]:
+            raise SystemExit(f"{path}: key {key} is selected-only and must not include score")
+
+    letters, score = selected_score_object(path, "15", data["15"])
+    expected = general_multi_choice_score(letters)
+    if score != expected:
+        raise SystemExit(f"{path}: key 15 score must be {expected} for selected={letters}, got {score}")
+
+    letters, score = selected_score_object(path, "27", data["27"])
+    expected = distributed_team_score(letters)
+    if score != expected:
+        raise SystemExit(f"{path}: key 27 score must be {expected} for selected={letters}, got {score}")
+
+    letters, score = selected_score_object(path, "38", data["38"])
+    if len(letters) != 1 or letters[0] not in {"A", "B", "C", "D"}:
+        raise SystemExit(f"{path}: key 38.selected must be exactly one of A/B/C/D, got {letters}")
+    expected = {"A": 1, "B": 2, "C": 3, "D": 4}[letters[0]]
+    if score != expected:
+        raise SystemExit(f"{path}: key 38 score must be {expected} for selected={letters}, got {score}")
 
     with path.open("w", encoding="utf-8") as handle:
         json.dump(data, handle, ensure_ascii=False, indent=2)
@@ -239,23 +324,51 @@ def validate_docx_q47(path: Path) -> None:
         "培育开放合作与协同文化",
     ]
     ranks = ["第一", "第二", "第三", "第四"]
-    items: list[tuple[str, str]] = []
-    for rank in ranks:
-        marker_index = segment.find(rank)
-        if marker_index < 0:
+    rank_numbers = {rank: index + 1 for index, rank in enumerate(ranks)}
+    rank_line_pattern = re.compile(r"^(第一|第二|第三|第四)\s*[：:]\s*(.+)$")
+    candidates: list[tuple[int, str, str]] = []
+
+    for line_number, raw_line in enumerate(segment.splitlines()):
+        line = raw_line.strip()
+        if not line:
             continue
-        following = [
-            candidate
-            for next_rank in ranks
-            if (candidate := segment.find(next_rank, marker_index + len(rank))) >= 0
-        ]
-        end = min(following) if following else len(segment)
-        items.append((rank, segment[marker_index:end]))
+        line = re.sub(r"^\s*(?:[-*]\s*)?", "", line)
+        line = re.sub(r"^\s*(?:\*\*)?(?:【答案】|答案)(?:\*\*)?\s*[：:]?\s*", "", line)
+        match = rank_line_pattern.match(line)
+        if match:
+            candidates.append((line_number, match.group(1), line))
+
+    best_block: list[tuple[str, str]] = []
+    best_start_line = -1
+    for index, (line_number, rank, line) in enumerate(candidates):
+        if rank != "第一":
+            continue
+        block = [(rank, line)]
+        expected_rank_number = 2
+        for _, next_rank, next_line in candidates[index + 1 :]:
+            next_rank_number = rank_numbers[next_rank]
+            if next_rank_number == expected_rank_number:
+                block.append((next_rank, next_line))
+                expected_rank_number += 1
+                if expected_rank_number > len(ranks):
+                    break
+            elif next_rank_number <= expected_rank_number - 1:
+                break
+            else:
+                break
+
+        if len(block) > len(best_block) or (
+            len(block) == len(best_block) and line_number > best_start_line
+        ):
+            best_block = block
+            best_start_line = line_number
+
+    items = best_block
 
     if len(items) < 2:
         raise SystemExit(
             f"Q47 must rank at least two demands using 第一/第二/...: {path}; "
-            f"found={len(items)}"
+            f"found={len(candidates)}"
         )
 
     selected: list[str] = []

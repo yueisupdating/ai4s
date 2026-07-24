@@ -82,6 +82,20 @@ def read_docx_paragraphs(path: Path) -> list[str]:
     return [paragraph.text.strip() for paragraph in Document(str(path)).paragraphs if paragraph.text.strip()]
 
 
+def read_markdown_lines(path: Path) -> list[str]:
+    return [
+        line.strip()
+        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        if line.strip()
+    ]
+
+
+def read_generated_paragraphs(path: Path) -> list[str]:
+    if path.suffix.lower() == ".docx":
+        return read_docx_paragraphs(path)
+    return read_markdown_lines(path)
+
+
 def find_source_questionnaire(input_path: Path) -> Path | None:
     search_dirs = [Path.cwd(), input_path.parent, input_path.parent.parent]
     seen: set[Path] = set()
@@ -133,7 +147,7 @@ def generated_answer_entries(input_path: Path) -> tuple[list[str], list[dict[str
     current_marker = ""
     current_lines: list[str] = []
 
-    for text in read_docx_paragraphs(input_path):
+    for text in read_generated_paragraphs(input_path):
         match = QUESTION_MARKER_RE.match(text)
         if match:
             if current_number is not None:
@@ -159,6 +173,33 @@ def generated_answer_entries(input_path: Path) -> tuple[list[str], list[dict[str
             "lines": current_lines,
         })
     return intro, entries
+
+
+def find_markdown_answer_source(input_path: Path) -> Path | None:
+    candidates: list[tuple[int, int, float, Path]] = []
+    search_dirs = [input_path.parent, Path.cwd()]
+    seen: set[Path] = set()
+
+    for directory in search_dirs:
+        directory = directory.resolve()
+        if directory in seen or not directory.is_dir():
+            continue
+        seen.add(directory)
+        for candidate in directory.glob("*.md"):
+            try:
+                intro, entries = generated_answer_entries(candidate)
+            except Exception:
+                continue
+            if len(entries) < 40:
+                continue
+            has_q47 = any(int(entry["number"]) == 47 for entry in entries)
+            prefer_v2 = 1 if "v2" in candidate.stem.lower() else 0
+            candidates.append((len(entries), has_q47 + prefer_v2, candidate.stat().st_mtime, candidate))
+
+    if not candidates:
+        return None
+
+    return sorted(candidates, reverse=True)[0][3]
 
 
 def generated_answer_blocks(input_path: Path) -> tuple[list[str], dict[int, list[str]]]:
@@ -371,6 +412,9 @@ def q47_has_ranked_answer(lines: list[str]) -> bool:
 
 
 def q47_ranked_answer_line(line: str) -> bool:
+    line = strip_markdown_markers(line)
+    line = re.sub(r"^\s*[-*]\s*", "", line)
+    line = re.sub(r"^\s*(?:【答案】|答案)\s*[：:]?\s*", "", line)
     ranks = ("第一", "第二", "第三", "第四")
     return (
         "____" not in line
@@ -379,40 +423,55 @@ def q47_ranked_answer_line(line: str) -> bool:
     )
 
 
+def q47_any_ranked_line(line: str) -> bool:
+    line = strip_markdown_markers(line)
+    line = re.sub(r"^\s*[-*]\s*", "", line)
+    line = re.sub(r"^\s*(?:【答案】|答案)\s*[：:]?\s*", "", line)
+    return re.match(r"^(第一|第二|第三|第四)\s*[：:]", line) is not None
+
+
 def ensure_q47_ranked_answer(lines: list[str]) -> list[str]:
-    if q47_has_ranked_answer(lines):
-        return lines
+    ranked_lines: list[str] = []
+    seen_dimensions: set[str] = set()
+    for line in lines:
+        if not q47_ranked_answer_line(line):
+            continue
+        clean_line = strip_markdown_markers(line)
+        clean_line = re.sub(r"^\s*[-*]\s*", "", clean_line)
+        clean_line = re.sub(r"^\s*(?:【答案】|答案)\s*[：:]?\s*", "", clean_line)
+        matches = [dimension for dimension in Q47_ALLOWED_DIMENSIONS if dimension in clean_line]
+        if not matches or matches[0] in seen_dimensions:
+            continue
+        seen_dimensions.add(matches[0])
+        ranked_lines.append(clean_line)
+
+    if len(ranked_lines) < 2:
+        ranked_lines = Q47_FALLBACK_RANKED_DEMANDS
 
     inserted = False
-    in_answer = False
     fixed: list[str] = []
     for line in lines:
-        if not inserted and "【答案】" in line:
-            fixed.append(line)
-            fixed.extend(Q47_FALLBACK_RANKED_DEMANDS)
+        plain = strip_markdown_markers(line)
+
+        if q47_any_ranked_line(line):
+            continue
+        if "【答案】" in plain or plain.startswith("答案"):
+            continue
+
+        if not inserted and ("【证据】" in plain or "【置信度】" in plain):
+            fixed.append("【答案】")
+            fixed.extend(ranked_lines)
             inserted = True
-            in_answer = True
-            continue
-
-        if in_answer:
-            if "【证据】" in line or "【置信度】" in line:
-                in_answer = False
-                fixed.append(line)
-            elif q47_ranked_answer_line(line):
-                continue
-            else:
-                continue
-            continue
-
-        if q47_ranked_answer_line(line):
+            fixed.append(line)
             continue
 
         fixed.append(line)
 
-    if inserted:
-        return fixed
+    if not inserted:
+        fixed.append("【答案】")
+        fixed.extend(ranked_lines)
 
-    return ["【答案】", *Q47_FALLBACK_RANKED_DEMANDS, *fixed]
+    return fixed
 
 
 def rebuild_docx_with_source_form(input_path: Path):
@@ -426,7 +485,14 @@ def rebuild_docx_with_source_form(input_path: Path):
     if len(source_blocks) != 47:
         return None
 
-    intro, answer_entries = generated_answer_entries(input_path)
+    answer_input_path = input_path
+    intro, answer_entries = generated_answer_entries(answer_input_path)
+    if len(answer_entries) < 40:
+        markdown_source = find_markdown_answer_source(input_path)
+        if markdown_source is not None:
+            answer_input_path = markdown_source
+            intro, answer_entries = generated_answer_entries(answer_input_path)
+
     if len(answer_entries) < 40:
         return None
     answer_blocks = align_answer_blocks_to_source(answer_entries, source_blocks)
